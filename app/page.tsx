@@ -15,6 +15,9 @@ import {
   Wand2,
   Sparkles,
   Loader2,
+  Smile,
+  Meh,
+  Frown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -150,6 +153,8 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiAppliedCount, setAiAppliedCount] = useState(0);
+  const [sentimentLoading, setSentimentLoading] = useState<Record<string, boolean>>({});
+  const [sentimentErrors, setSentimentErrors] = useState<Record<string, string | null>>({});
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback((file: File) => {
@@ -163,6 +168,8 @@ export default function Home() {
     setIsParsing(true);
     setAppliedTransforms({});
     setAiAppliedCount(0);
+    setSentimentLoading({});
+    setSentimentErrors({});
 
     Papa.parse<Record<string, string>>(file, {
       header: true,
@@ -214,6 +221,8 @@ export default function Home() {
     setParseError(null);
     setAppliedTransforms({});
     setAiAppliedCount(0);
+    setSentimentLoading({});
+    setSentimentErrors({});
     if (inputRef.current) inputRef.current.value = '';
   }, []);
 
@@ -233,6 +242,54 @@ export default function Home() {
     },
     []
   );
+
+  const handleSentiment = useCallback(async (header: string) => {
+    if (!csvData) return;
+
+    setSentimentLoading((prev) => ({ ...prev, [header]: true }));
+    setSentimentErrors((prev) => ({ ...prev, [header]: null }));
+
+    try {
+      const values = csvData.rows.map((r) => r[header] ?? '');
+
+      const res = await fetch('/api/ai-sentiment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ header, values }),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        setSentimentErrors((prev) => ({
+          ...prev,
+          [header]: result.error || 'Sentiment analysis failed',
+        }));
+        return;
+      }
+
+      setCsvData((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((row, rowIdx) => ({
+          ...row,
+          [header]: result.values[rowIdx] ?? row[header],
+        }));
+        return { ...prev, rows: newRows };
+      });
+
+      setAppliedTransforms((prev) => ({
+        ...prev,
+        [header]: [...(prev[header] ?? []), 'sentiment' as TransformRule],
+      }));
+    } catch (err) {
+      setSentimentErrors((prev) => ({
+        ...prev,
+        [header]: err instanceof Error ? err.message : 'Something went wrong',
+      }));
+    } finally {
+      setSentimentLoading((prev) => ({ ...prev, [header]: false }));
+    }
+  }, [csvData]);
 
   const openAiDialog = useCallback(() => {
     if (csvData) {
@@ -681,7 +738,7 @@ export default function Home() {
                                     )}
                                   </button>
                                 </DropdownMenuTrigger>
-                                <DropdownMenuContent align="start" className="w-52">
+                                <DropdownMenuContent align="start" className="w-56">
                                   <DropdownMenuLabel className="text-xs text-muted-foreground">
                                     Transform column
                                   </DropdownMenuLabel>
@@ -710,6 +767,31 @@ export default function Home() {
                                       </DropdownMenuItem>
                                     );
                                   })}
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuLabel className="text-xs text-muted-foreground">
+                                    AI Recipe
+                                  </DropdownMenuLabel>
+                                  <DropdownMenuItem
+                                    onClick={() => handleSentiment(header)}
+                                    disabled={sentimentLoading[header]}
+                                    className="gap-2 text-sm"
+                                  >
+                                    {sentimentLoading[header] ? (
+                                      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                                    ) : (
+                                      <span className="flex items-center gap-0.5">
+                                        <Smile className="h-3 w-3 text-chart-2" />
+                                        <Meh className="h-3 w-3 text-muted-foreground" />
+                                        <Frown className="h-3 w-3 text-destructive" />
+                                      </span>
+                                    )}
+                                    Categorize Sentiment
+                                  </DropdownMenuItem>
+                                  {sentimentErrors[header] && (
+                                    <div className="px-2 py-1.5 text-[11px] text-destructive">
+                                      {sentimentErrors[header]}
+                                    </div>
+                                  )}
                                   {transforms.length > 0 && (
                                     <>
                                       <DropdownMenuSeparator />
