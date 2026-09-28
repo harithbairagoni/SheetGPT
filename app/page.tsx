@@ -13,11 +13,14 @@ import {
   AlertTriangle,
   ChevronDown,
   Wand2,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableHeader,
@@ -34,6 +37,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import {
   transformColumn,
@@ -56,6 +67,15 @@ const TRANSFORM_RULES: TransformRule[] = [
   'lowercase',
   'titlecase',
   'extract_email',
+];
+
+const AI_SUGGESTIONS = [
+  'Standardize all phone numbers to (XXX) XXX-XXXX format',
+  'Fix common typos and spelling mistakes',
+  'Normalize all dates to YYYY-MM-DD',
+  'Remove extra whitespace and trim all fields',
+  'Standardize state names to two-letter abbreviations',
+  'Fill empty cells with "N/A"',
 ];
 
 function formatBytes(bytes: number): string {
@@ -122,6 +142,14 @@ export default function Home() {
   const [appliedTransforms, setAppliedTransforms] = useState<
     Record<string, TransformRule[]>
   >({});
+  const [aiDialogOpen, setAiDialogOpen] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState('');
+  const [aiSelectedColumns, setAiSelectedColumns] = useState<Set<string>>(
+    new Set()
+  );
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiAppliedCount, setAiAppliedCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback((file: File) => {
@@ -134,6 +162,7 @@ export default function Home() {
     setParseError(null);
     setIsParsing(true);
     setAppliedTransforms({});
+    setAiAppliedCount(0);
 
     Papa.parse<Record<string, string>>(file, {
       header: true,
@@ -184,6 +213,7 @@ export default function Home() {
     setCsvData(null);
     setParseError(null);
     setAppliedTransforms({});
+    setAiAppliedCount(0);
     if (inputRef.current) inputRef.current.value = '';
   }, []);
 
@@ -203,6 +233,85 @@ export default function Home() {
     },
     []
   );
+
+  const openAiDialog = useCallback(() => {
+    if (csvData) {
+      setAiSelectedColumns(new Set(csvData.headers));
+    }
+    setAiInstruction('');
+    setAiError(null);
+    setAiDialogOpen(true);
+  }, [csvData]);
+
+  const toggleColumnSelection = useCallback((header: string) => {
+    setAiSelectedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(header)) {
+        next.delete(header);
+      } else {
+        next.add(header);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleAiClean = useCallback(async () => {
+    if (!csvData || !aiInstruction.trim() || aiSelectedColumns.size === 0) return;
+
+    setAiLoading(true);
+    setAiError(null);
+
+    try {
+      const columns = Array.from(aiSelectedColumns).map((header) => ({
+        header,
+        values: csvData.rows.map((r) => r[header] ?? ''),
+      }));
+
+      const res = await fetch('/api/ai-clean', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          columns,
+          instruction: aiInstruction.trim(),
+        }),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        setAiError(result.error || 'AI cleaning failed');
+        setAiLoading(false);
+        return;
+      }
+
+      const cleanedMap: Record<string, string[]> = {};
+      for (const col of result.columns) {
+        cleanedMap[col.header] = col.values;
+      }
+
+      setCsvData((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((row, rowIdx) => {
+          const updated = { ...row };
+          for (const header of Object.keys(cleanedMap)) {
+            const cleanedValues = cleanedMap[header];
+            if (cleanedValues[rowIdx] !== undefined) {
+              updated[header] = String(cleanedValues[rowIdx]);
+            }
+          }
+          return updated;
+        });
+        return { ...prev, rows: newRows };
+      });
+
+      setAiAppliedCount((c) => c + 1);
+      setAiDialogOpen(false);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setAiLoading(false);
+    }
+  }, [csvData, aiInstruction, aiSelectedColumns]);
 
   // Build column stats for the loaded data
   const columnStats = csvData
@@ -240,17 +349,29 @@ export default function Home() {
               </p>
             </div>
           </div>
-          {csvData && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRemoveFile}
-              className="gap-1.5"
-            >
-              <X className="h-3.5 w-3.5" />
-              Remove file
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {csvData && (
+              <Button
+                size="sm"
+                onClick={openAiDialog}
+                className="gap-1.5 bg-gradient-to-r from-primary to-chart-1 text-primary-foreground hover:opacity-90"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                AI Clean
+              </Button>
+            )}
+            {csvData && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRemoveFile}
+                className="gap-1.5"
+              >
+                <X className="h-3.5 w-3.5" />
+                Remove file
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -345,9 +466,9 @@ export default function Home() {
                   desc: 'Automatic type detection per column',
                 },
                 {
-                  icon: CheckCircle2,
-                  title: 'Quality check',
-                  desc: 'Spot empty cells and parse errors',
+                  icon: Sparkles,
+                  title: 'AI-powered cleaning',
+                  desc: 'Clean data with natural language instructions',
                 },
               ].map((feature, i) => (
                 <div
@@ -384,17 +505,12 @@ export default function Home() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {csvData.errors > 0 ? (
-                    <Badge
-                      variant="destructive"
-                      className="gap-1.5"
-                    >
+                    <Badge variant="destructive" className="gap-1.5">
                       <AlertTriangle className="h-3 w-3" />
                       {csvData.errors} parse {csvData.errors === 1 ? 'error' : 'errors'}
                     </Badge>
                   ) : (
-                    <Badge
-                      className="gap-1.5 bg-success text-success-foreground hover:bg-success/80"
-                    >
+                    <Badge className="gap-1.5 bg-success text-success-foreground hover:bg-success/80">
                       <CheckCircle2 className="h-3 w-3" />
                       Parsed cleanly
                     </Badge>
@@ -409,6 +525,12 @@ export default function Home() {
                     <Badge className="gap-1.5 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/15">
                       <Wand2 className="h-3 w-3" />
                       {totalTransforms} {totalTransforms === 1 ? 'transform' : 'transforms'} applied
+                    </Badge>
+                  )}
+                  {aiAppliedCount > 0 && (
+                    <Badge className="gap-1.5 bg-gradient-to-r from-primary to-chart-1 text-primary-foreground">
+                      <Sparkles className="h-3 w-3" />
+                      {aiAppliedCount} AI {aiAppliedCount === 1 ? 'clean' : 'cleans'}
                     </Badge>
                   )}
                   {csvData.totalRows > MAX_DISPLAY_ROWS && (
@@ -453,6 +575,31 @@ export default function Home() {
                 value={totalEmptyCells.toLocaleString()}
               />
             </div>
+
+            {/* AI Clean action bar */}
+            <Card className="mb-6 border-primary/20 bg-gradient-to-r from-accent/40 to-transparent p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-chart-1 text-primary-foreground">
+                    <Sparkles className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">AI-Powered Cleaning</p>
+                    <p className="text-xs text-muted-foreground">
+                      Clean your data using natural language instructions
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  onClick={openAiDialog}
+                  size="sm"
+                  className="gap-1.5 bg-gradient-to-r from-primary to-chart-1 text-primary-foreground hover:opacity-90"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Open AI Cleaner
+                </Button>
+              </div>
+            </Card>
 
             {/* Column type summary */}
             <div className="mb-6">
@@ -514,7 +661,7 @@ export default function Home() {
                         <TableHead className="w-12 text-center text-xs font-semibold text-muted-foreground/60">
                           #
                         </TableHead>
-                        {csvData.headers.map((header, headerIdx) => {
+                        {csvData.headers.map((header) => {
                           const transforms = appliedTransforms[header] ?? [];
                           return (
                             <TableHead
@@ -580,10 +727,7 @@ export default function Home() {
                     </TableHeader>
                     <TableBody>
                       {csvData.rows.map((row, rowIndex) => (
-                        <TableRow
-                          key={rowIndex}
-                          className="group/row"
-                        >
+                        <TableRow key={rowIndex} className="group/row">
                           <TableCell className="w-12 text-center text-xs text-muted-foreground/50 group-hover/row:text-muted-foreground">
                             {rowIndex + 1}
                           </TableCell>
@@ -618,16 +762,132 @@ export default function Home() {
                 </div>
               </Card>
               <p className="mt-3 text-xs text-muted-foreground">
-                Click any column header to apply a transformation rule. Rules apply instantly to all rows in that column.
+                Click any column header to apply a transformation rule, or use AI Clean for natural-language cleaning.
               </p>
             </div>
           </div>
         )}
       </main>
 
+      {/* AI Clean Dialog */}
+      <Dialog open={aiDialogOpen} onOpenChange={setAiDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-chart-1 text-primary-foreground">
+                <Sparkles className="h-4 w-4" />
+              </div>
+              <DialogTitle>AI Data Cleaner</DialogTitle>
+            </div>
+            <DialogDescription>
+              Describe how you want to clean your data. The AI will apply your
+              instruction to the selected columns.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Column selection */}
+            <div>
+              <label className="mb-2 block text-sm font-medium">
+                Columns to clean
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {csvData?.headers.map((header) => {
+                  const selected = aiSelectedColumns.has(header);
+                  return (
+                    <button
+                      key={header}
+                      onClick={() => toggleColumnSelection(header)}
+                      className={cn(
+                        'rounded-lg border px-3 py-1.5 text-xs font-medium transition-all',
+                        selected
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-muted text-muted-foreground hover:border-primary/40'
+                      )}
+                    >
+                      {selected && <CheckCircle2 className="mr-1 inline h-3 w-3" />}
+                      {header}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Instruction input */}
+            <div>
+              <label className="mb-2 block text-sm font-medium">
+                Cleaning instruction
+              </label>
+              <Textarea
+                value={aiInstruction}
+                onChange={(e) => setAiInstruction(e.target.value)}
+                placeholder="e.g. Standardize all phone numbers to (XXX) XXX-XXXX format"
+                className="min-h-[80px] resize-none"
+                disabled={aiLoading}
+              />
+            </div>
+
+            {/* Suggestions */}
+            <div>
+              <p className="mb-2 text-xs text-muted-foreground">Try one of these:</p>
+              <div className="flex flex-wrap gap-2">
+                {AI_SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => setAiInstruction(suggestion)}
+                    disabled={aiLoading}
+                    className="rounded-full border border-border bg-muted/50 px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {aiError && (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                {aiError}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setAiDialogOpen(false)}
+              disabled={aiLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAiClean}
+              disabled={
+                aiLoading ||
+                !aiInstruction.trim() ||
+                aiSelectedColumns.size === 0
+              }
+              className="gap-1.5 bg-gradient-to-r from-primary to-chart-1 text-primary-foreground hover:opacity-90"
+            >
+              {aiLoading ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Cleaning...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Apply AI Clean
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <footer className="mt-8 border-t border-border/60 py-6">
         <p className="text-center text-xs text-muted-foreground">
-          CSV Data Cleaner — all processing happens in your browser
+          CSV Data Cleaner — powered by Gemini AI
         </p>
       </footer>
     </div>
